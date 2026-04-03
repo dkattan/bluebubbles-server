@@ -80,35 +80,67 @@ export class MessageRouter {
         const withMessageSummaryInfo = arrayHasOne(withQuery, ["messageSummaryInfo", "message-summary-info"]);
         const withPayloadData = arrayHasOne(withQuery, ["payloadData", "payload-data"]);
 
-        // Fetch the info for the message by GUID
-        const message = await Server().iMessageRepo.getMessage(guid, withChats, withAttachments);
-        if (!message) throw new NotFound({ error: "Message does not exist!" });
+        const debugCanary = ctx.request.query.debugCanary === "1";
 
-        // If we want participants of the chat, fetch them
-        if (withParticipants) {
-            for (const i of message.chats ?? []) {
-                const [chats, __] = await Server().iMessageRepo.getChats({
-                    chatGuid: i.guid,
-                    withParticipants,
-                    withLastMessage: false,
-                    withArchived: true
-                });
+        try {
+            // Fetch the info for the message by GUID
+            const message = await Server().iMessageRepo.getMessage(guid, withChats, withAttachments);
+            if (!message) throw new NotFound({ error: "Message does not exist!" });
 
-                if (isEmpty(chats)) continue;
-                i.participants = chats[0].participants;
+            // If we want participants of the chat, fetch them
+            if (withParticipants) {
+                for (const i of message.chats ?? []) {
+                    const [chats, __] = await Server().iMessageRepo.getChats({
+                        chatGuid: i.guid,
+                        withParticipants,
+                        withLastMessage: false,
+                        withArchived: true
+                    });
+
+                    if (isEmpty(chats)) continue;
+                    i.participants = chats[0].participants;
+                }
             }
-        }
 
-        return new Success(ctx, {
-            data: await MessageSerializer.serialize({
+            const data = await MessageSerializer.serialize({
                 message,
                 config: {
                     parseAttributedBody: withAttributedBody,
                     parseMessageSummary: withMessageSummaryInfo,
                     parsePayloadData: withPayloadData
                 }
-            })
-        }).send();
+            });
+
+            return new Success(ctx, { data }).send();
+        } catch (ex: any) {
+            if (!debugCanary) throw ex;
+
+            let rawMessage: Message = null;
+            try {
+                rawMessage = await Server().iMessageRepo.getMessage(guid, withChats, withAttachments);
+            } catch {
+                // ignore
+            }
+
+            return new Success(ctx, {
+                data: {
+                    guid,
+                    error: ex?.message ?? String(ex),
+                    stack: ex?.stack ?? null,
+                    messageExists: !!rawMessage,
+                    attachmentCount: rawMessage?.attachments?.length ?? null,
+                    attachments: (rawMessage?.attachments ?? []).map((a: any) => ({
+                        ROWID: a?.ROWID,
+                        guid: a?.guid,
+                        transferName: a?.transferName,
+                        filePath: a?.filePath,
+                        mimeType: a?.mimeType,
+                        totalBytes: a?.totalBytes,
+                        hasGetMimeType: typeof a?.getMimeType === "function"
+                    }))
+                }
+            }).send();
+        }
     }
 
     static async query(ctx: RouterContext, _: Next) {
