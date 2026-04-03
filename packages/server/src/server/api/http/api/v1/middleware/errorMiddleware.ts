@@ -31,6 +31,19 @@ export const ErrorMiddleware = async (ctx: Context, next: Next) => {
             ctx.body = err.response;
         } else {
             ctx.status = 500;
+
+            if (ctx?.request?.query?.debugCanary === "1") {
+                ctx.body = {
+                    status: 500,
+                    error: ex?.message ?? String(ex),
+                    stack: ex?.stack ?? null,
+                    type: ErrorTypes.SERVER_ERROR,
+                    path: ctx.path,
+                    method: ctx.method
+                };
+                return;
+            }
+
             ctx.body = createServerErrorResponse(
                 ex?.message ?? String(ex),
                 ErrorTypes.SERVER_ERROR,
