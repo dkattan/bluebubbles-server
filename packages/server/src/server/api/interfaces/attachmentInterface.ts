@@ -63,13 +63,28 @@ export class AttachmentInterface {
         return realPath;
     }
 
-    static async forceDownload(attachment: Attachment): Promise<Attachment> {
+    static async forceDownload(
+        attachment: Attachment,
+        {
+            maxWaitMs = 1000 * 15,
+            initialWaitMs = 1000,
+            waitMultiplier = 1.5
+        }: {
+            maxWaitMs?: number;
+            initialWaitMs?: number;
+            waitMultiplier?: number;
+        } = {}
+    ): Promise<Attachment> {
+        if (isEmpty(attachment?.guid)) {
+            throw new Error("Failed to download attachment! Missing attachment GUID.");
+        }
+
         await Server().privateApi.attachment.downloadPurged(attachment.guid);
 
         attachment = await resultAwaiter({
-            maxWaitMs: 1000 * 60 * 10,
-            initialWaitMs: 1000 * 5,
-            waitMultiplier: 1,
+            maxWaitMs,
+            initialWaitMs,
+            waitMultiplier,
             getData: (_: any) => {
                 return Server().iMessageRepo.getAttachment(attachment.guid);
             },
@@ -79,7 +94,7 @@ export class AttachmentInterface {
         });
 
         if (!attachment || attachment.transferState !== 5) {
-            throw new Error(`Failed to download attachment! Transfer State: ${attachment?.transferState}`);
+            throw new Error(`Attachment download pending or failed! Transfer State: ${attachment?.transferState}`);
         }
 
         return attachment;
