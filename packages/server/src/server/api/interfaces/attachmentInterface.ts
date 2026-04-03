@@ -79,7 +79,12 @@ export class AttachmentInterface {
             throw new Error("Failed to download attachment! Missing attachment GUID.");
         }
 
-        await Server().privateApi.attachment.downloadPurged(attachment.guid);
+        const downloadResult = await Server().privateApi.attachment.downloadPurged(attachment.guid);
+        const forcedPath = downloadResult?.data?.path;
+        if (forcedPath && fs.existsSync(forcedPath)) {
+            attachment.filePath = forcedPath;
+            return attachment;
+        }
 
         attachment = await resultAwaiter({
             maxWaitMs,
@@ -93,7 +98,11 @@ export class AttachmentInterface {
             }
         });
 
-        if (!attachment || attachment.transferState !== 5) {
+        if (forcedPath && attachment) {
+            attachment.filePath = forcedPath;
+        }
+
+        if (!attachment || (attachment.transferState !== 5 && (!forcedPath || !fs.existsSync(forcedPath)))) {
             throw new Error(`Attachment download pending or failed! Transfer State: ${attachment?.transferState}`);
         }
 
