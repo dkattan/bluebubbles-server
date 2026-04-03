@@ -302,7 +302,74 @@ export class MessageRepository extends Loggable {
         query.skip(offset);
         query.take(limit);
 
-        return await query.getManyAndCount();
+        let [messages, totalCount] = await query.getManyAndCount();
+
+        // TypeORM can occasionally hydrate message rows without their many-to-many attachments
+        // when paginating joined message queries. Backfill attachments explicitly by message ROWID
+        // so API responses match the underlying SQLite join table.
+        if (withAttachments && isNotEmpty(messages)) {
+            const messageRowIds = messages.map(m => m.ROWID).filter(Boolean);
+            if (isNotEmpty(messageRowIds)) {
+                const attachmentRows = await this.db
+                    .createQueryBuilder()
+                    .select('maj.message_id', 'message_id')
+                    .addSelect('attachment.ROWID', 'attachment_ROWID')
+                    .addSelect('attachment.guid', 'attachment_guid')
+                    .addSelect('attachment.created_date', 'attachment_created_date')
+                    .addSelect('attachment.start_date', 'attachment_start_date')
+                    .addSelect('attachment.filename', 'attachment_filename')
+                    .addSelect('attachment.uti', 'attachment_uti')
+                    .addSelect('attachment.mime_type', 'attachment_mime_type')
+                    .addSelect('attachment.transfer_state', 'attachment_transfer_state')
+                    .addSelect('attachment.is_outgoing', 'attachment_is_outgoing')
+                    .addSelect('attachment.user_info', 'attachment_user_info')
+                    .addSelect('attachment.transfer_name', 'attachment_transfer_name')
+                    .addSelect('attachment.total_bytes', 'attachment_total_bytes')
+                    .addSelect('attachment.is_sticker', 'attachment_is_sticker')
+                    .addSelect('attachment.sticker_user_info', 'attachment_sticker_user_info')
+                    .addSelect('attachment.attribution_info', 'attachment_attribution_info')
+                    .addSelect('attachment.hide_attachment', 'attachment_hide_attachment')
+                    .addSelect('attachment.original_guid', 'attachment_original_guid')
+                    .from('message_attachment_join', 'maj')
+                    .innerJoin('attachment', 'attachment', 'attachment.ROWID = maj.attachment_id')
+                    .where('maj.message_id IN (:...messageRowIds)', { messageRowIds })
+                    .getRawMany();
+
+                const byMessageId = new Map<number, any[]>();
+                for (const row of attachmentRows) {
+                    const msgId = Number(row.message_id);
+                    const arr = byMessageId.get(msgId) ?? [];
+                    arr.push({
+                        ROWID: row.attachment_ROWID,
+                        guid: row.attachment_guid,
+                        createdDate: row.attachment_created_date,
+                        startDate: row.attachment_start_date,
+                        filePath: row.attachment_filename,
+                        uti: row.attachment_uti,
+                        mimeType: row.attachment_mime_type,
+                        transferState: row.attachment_transfer_state,
+                        isOutgoing: row.attachment_is_outgoing,
+                        userInfo: row.attachment_user_info,
+                        transferName: row.attachment_transfer_name,
+                        totalBytes: row.attachment_total_bytes,
+                        isSticker: row.attachment_is_sticker,
+                        stickerUserInfo: row.attachment_sticker_user_info,
+                        attributionInfo: row.attachment_attribution_info,
+                        hideAttachment: row.attachment_hide_attachment,
+                        originalGuid: row.attachment_original_guid
+                    });
+                    byMessageId.set(msgId, arr);
+                }
+
+                for (const message of messages) {
+                    if (!isNotEmpty(message.attachments)) {
+                        message.attachments = byMessageId.get(message.ROWID) ?? [];
+                    }
+                }
+            }
+        }
+
+        return [messages, totalCount];
     }
 
     /**

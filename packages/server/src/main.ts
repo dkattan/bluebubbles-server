@@ -34,8 +34,9 @@ let isHandlingExit = false;
 Server(parsedArgs, null);
 const log = getLogger("Main");
 
-// Only 1 instance is allowed
-const gotTheLock = app.requestSingleInstanceLock();
+// Only 1 instance is allowed, unless explicitly bypassed for isolated dev/test runs.
+const skipSingleInstanceLock = process.env.BLUEBUBBLES_SKIP_SINGLE_INSTANCE === "1";
+const gotTheLock = skipSingleInstanceLock ? true : app.requestSingleInstanceLock();
 if (!gotTheLock) {
     console.error("BlueBubbles is already running! Quiting...");
     app.exit(0);
