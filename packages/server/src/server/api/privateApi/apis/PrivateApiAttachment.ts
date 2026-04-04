@@ -50,6 +50,7 @@ export class PrivateApiAttachment extends PrivateApiAction {
     async downloadPurged(guid: string): Promise<TransactionResult> {
         const action = "download-purged-attachment";
         this.throwForNoMissingFields(action, [guid]);
-        return this.sendApiMessage(action, { attachmentGuid: guid });
+        const request = new TransactionPromise(TransactionType.ATTACHMENT);
+        return this.sendApiMessage(action, { attachmentGuid: guid }, request);
     }
 }
