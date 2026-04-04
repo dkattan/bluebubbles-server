@@ -80,6 +80,7 @@ export class AttachmentInterface {
         }
 
         const downloadResult = await Server().privateApi.attachment.downloadPurged(attachment.guid);
+        Server().log(`downloadPurged result (GUID: ${attachment.guid}): ${JSON.stringify(downloadResult)}`);
         const forcedPath = downloadResult?.data?.path;
         if (forcedPath && fs.existsSync(forcedPath)) {
             attachment.filePath = forcedPath;
