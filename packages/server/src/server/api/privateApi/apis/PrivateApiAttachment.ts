@@ -6,6 +6,15 @@ import {
 } from "@server/managers/transactionManager/transactionPromise";
 import { PrivateApiAction } from ".";
 
+function formatTransactionData(data: any): string {
+    if (data == null) return "null";
+    try {
+        return JSON.stringify(data);
+    } catch {
+        return String(data);
+    }
+}
+
 export class PrivateApiAttachment extends PrivateApiAction {
     tag = "PrivateApiAttachment";
 
@@ -50,6 +59,30 @@ export class PrivateApiAttachment extends PrivateApiAction {
     async downloadPurged(guid: string): Promise<TransactionResult> {
         const action = "download-purged-attachment";
         this.throwForNoMissingFields(action, [guid]);
-        return this.sendApiMessage(action, { attachmentGuid: guid });
+
+        const request = new TransactionPromise(TransactionType.ATTACHMENT);
+        Server().log(
+            `Requesting purged attachment download via Private API (GUID: ${guid}; transactionId: ${request.transactionId})`,
+            "debug"
+        );
+
+        try {
+            const result = await this.sendApiMessage(action, { attachmentGuid: guid }, request);
+            Server().log(
+                `Private API purged attachment download completed (GUID: ${guid}; transactionId: ${
+                    request.transactionId
+                }; identifier: ${result.identifier}; data: ${formatTransactionData(result.data)})`,
+                "debug"
+            );
+            return result;
+        } catch (ex) {
+            Server().log(
+                `Private API purged attachment download failed (GUID: ${guid}; transactionId: ${
+                    request.transactionId
+                }): ${String(ex)}`,
+                "warn"
+            );
+            throw ex;
+        }
     }
 }

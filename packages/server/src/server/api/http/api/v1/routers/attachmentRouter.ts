@@ -12,6 +12,17 @@ import { FileStream, Success } from "../responses/success";
 import { BadRequest, NotFound, ServerError } from "../responses/errors";
 import { AttachmentSerializer } from "@server/api/serializers/AttachmentSerializer";
 
+function describeAttachment(attachment: any): string {
+    if (!attachment) return "attachment=null";
+    return [
+        `guid=${attachment.guid}`,
+        `transferState=${attachment.transferState ?? "null"}`,
+        `filePath=${attachment.filePath ?? "null"}`,
+        `transferName=${attachment.transferName ?? "null"}`,
+        `originalGuid=${attachment.originalGuid ?? "null"}`
+    ].join("; ");
+}
+
 export class AttachmentRouter {
     static async count(ctx: RouterContext, _: Next) {
         const total = await Server().iMessageRepo.getAttachmentCount();
@@ -33,25 +44,73 @@ export class AttachmentRouter {
         const useOriginal = isTruthyBool(original as string);
         const forceDownload = isTruthyBool((force as string) ?? "true");
 
+        Server().log(
+            `Attachment download route requested (GUID: ${guid}; forceDownload=${forceDownload}; original=${useOriginal}; quality=${
+                quality ?? "null"
+            }; width=${width ?? "null"}; height=${height ?? "null"})`,
+            "debug"
+        );
+
         // Fetch the info for the attachment by GUID
-        const attachment = await Server().iMessageRepo.getAttachment(guid);
+        let attachment = await Server().iMessageRepo.getAttachment(guid);
         if (!attachment) {
             const papiEnabled = Server().repo.getConfig("enable_private_api") as boolean;
+            Server().log(
+                `Attachment download route could not find attachment in the database (GUID: ${guid}; forceDownload=${forceDownload}; privateApiEnabled=${papiEnabled})`,
+                "debug"
+            );
             if (!forceDownload || !papiEnabled) {
                 throw new NotFound({ error: "Attachment does not exist!" });
             }
 
-            // Try to force download the attachment
             try {
-                await AttachmentInterface.forceDownload(attachment);
+                const result = await Server().privateApi.attachment.downloadPurged(guid);
+                Server().log(
+                    `Attachment download route requested private API download for missing attachment (GUID: ${guid}; identifier=${result.identifier})`,
+                    "debug"
+                );
             } catch (ex) {
-                Server().log(`Failed for force download attachment (GUID: ${attachment.guid}): ${String(ex)}`);
+                Server().log(
+                    `Failed to request private API download for missing attachment (GUID: ${guid}): ${String(ex)}`,
+                    "warn"
+                );
+            }
+
+            attachment = await Server().iMessageRepo.getAttachment(guid);
+            if (!attachment) {
+                throw new NotFound({ error: "Attachment does not exist!" });
+            }
+        } else if (forceDownload) {
+            const currentPath = attachment.filePath ? FileSystem.getRealPath(attachment.filePath) : "";
+            if (isEmpty(currentPath) || !fs.existsSync(currentPath)) {
+                Server().log(
+                    `Attachment download route found attachment without a readable local file, attempting force-download (${describeAttachment(
+                        attachment
+                    )})`,
+                    "debug"
+                );
+                try {
+                    attachment = await AttachmentInterface.forceDownload(attachment);
+                } catch (ex) {
+                    Server().log(
+                        `Failed to force download attachment (${describeAttachment(attachment)}): ${String(ex)}`,
+                        "warn"
+                    );
+                }
             }
         }
 
         let aPath = FileSystem.getRealPath(attachment.filePath);
         let mimeType = attachment.getMimeType();
-        if (!fs.existsSync(aPath)) throw new ServerError({ error: "Attachment does not exist in disk!" });
+        if (!fs.existsSync(aPath)) {
+            Server().log(
+                `Attachment file is still missing on disk after download handling (${describeAttachment(
+                    attachment
+                )}; resolvedPath=${aPath})`,
+                "warn"
+            );
+            throw new ServerError({ error: "Attachment does not exist in disk!" });
+        }
 
         const g = attachment.guid;
         const og = attachment.originalGuid ?? "N/A";
@@ -84,7 +143,9 @@ export class AttachmentRouter {
 
                     const qualities = ["good", "better", "best"];
                     if (!qualities.includes(quality as string)) {
-                        throw new BadRequest({ error: `Invalid quality specified! Must be one of: ${qualities.join(', ')}` });
+                        throw new BadRequest({
+                            error: `Invalid quality specified! Must be one of: ${qualities.join(", ")}`
+                        });
                     }
 
                     opts.quality = quality as "good" | "better" | "best";
@@ -194,15 +255,16 @@ export class AttachmentRouter {
 
     static async forceDownload(ctx: RouterContext, _: Next) {
         const { guid } = ctx.params;
-        const attachment = await Server().iMessageRepo.getAttachment(guid);
+        Server().log(`Attachment force-download route requested (GUID: ${guid})`, "debug");
+
+        let attachment = await Server().iMessageRepo.getAttachment(guid);
         if (!attachment) {
             throw new BadRequest({ message: `An attachment with the GUID, "${guid}" does not exist!` });
         }
 
-        await Server().privateApi.attachment.downloadPurged(guid);
-
         // Wait a max of 10 minutes
-        await AttachmentInterface.forceDownload(attachment);
+        attachment = await AttachmentInterface.forceDownload(attachment);
+        Server().log(`Attachment force-download route completed (${describeAttachment(attachment)})`, "debug");
         return await AttachmentRouter.download(ctx, _);
     }
 }

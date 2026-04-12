@@ -5,6 +5,27 @@ import { FileSystem } from "@server/fileSystem";
 import { Attachment } from "@server/databases/imessage/entity/Attachment";
 import { Server } from "@server";
 
+function describeAttachment(attachment?: Attachment | null): string {
+    if (!attachment) return "attachment=null";
+    return [
+        `guid=${attachment.guid}`,
+        `transferState=${attachment.transferState}`,
+        `filePath=${attachment.filePath ?? "null"}`,
+        `transferName=${attachment.transferName ?? "null"}`,
+        `totalBytes=${attachment.totalBytes ?? "null"}`,
+        `originalGuid=${attachment.originalGuid ?? "null"}`
+    ].join("; ");
+}
+
+function formatTransactionData(data: any): string {
+    if (data == null) return "null";
+    try {
+        return JSON.stringify(data);
+    } catch {
+        return String(data);
+    }
+}
+
 export class AttachmentInterface {
     static livePhotoExts = ["png", "jpeg", "jpg", "heic", "tiff"];
 
@@ -43,14 +64,14 @@ export class AttachmentInterface {
 
         // Get the existing extension (if any).
         // If it's been converted, it'll have a double-extension.
-        let ext = fPath.includes('.heic.jpeg') ? 'heic.jpeg' : fPath.split(".").pop() ?? "";
+        let ext = fPath.includes(".heic.jpeg") ? "heic.jpeg" : fPath.split(".").pop() ?? "";
 
         // If the extension is not an image extension, return null
         if (!AttachmentInterface.livePhotoExts.includes(ext.toLowerCase())) return null;
 
         // Escape periods in the extension for the regex
         ext = ext.replace(/\./g, "\\.");
-    
+
         // Get the path to the live photo
         // Replace the extension with .mov, or add it if there is no extension
         const livePath = isNotEmpty(ext) ? fPath.replace(new RegExp(`\\.${ext}$`), ".mov") : `${fPath}.mov`;
@@ -64,14 +85,23 @@ export class AttachmentInterface {
     }
 
     static async forceDownload(attachment: Attachment): Promise<Attachment> {
-        await Server().privateApi.attachment.downloadPurged(attachment.guid);
+        const attachmentGuid = attachment.guid;
+        Server().log(`Starting attachment force-download (${describeAttachment(attachment)})`, "debug");
+
+        const result = await Server().privateApi.attachment.downloadPurged(attachmentGuid);
+        Server().log(
+            `Private API force-download request finished (guid=${attachmentGuid}; identifier=${
+                result.identifier
+            }; data=${formatTransactionData(result.data)})`,
+            "debug"
+        );
 
         attachment = await resultAwaiter({
             maxWaitMs: 1000 * 60 * 10,
             initialWaitMs: 1000 * 5,
             waitMultiplier: 1,
             getData: (_: any) => {
-                return Server().iMessageRepo.getAttachment(attachment.guid);
+                return Server().iMessageRepo.getAttachment(attachmentGuid);
             },
             dataLoopCondition: (data: Attachment) => {
                 return !data || data.transferState !== 5;
@@ -79,9 +109,16 @@ export class AttachmentInterface {
         });
 
         if (!attachment || attachment.transferState !== 5) {
+            Server().log(
+                `Attachment force-download timed out or ended in a non-downloaded state (${describeAttachment(
+                    attachment
+                )})`,
+                "warn"
+            );
             throw new Error(`Failed to download attachment! Transfer State: ${attachment?.transferState}`);
         }
 
+        Server().log(`Attachment force-download completed (${describeAttachment(attachment)})`, "debug");
         return attachment;
     }
 }
