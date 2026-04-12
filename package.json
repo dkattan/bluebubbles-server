@@ -22,9 +22,16 @@
     },
     "homepage": "https://www.bluebubbles.app",
     "devEngines": {
-        "node": "20.11.x",
-        "npm": ">=10.x",
-        "python": ">=3.10.x"
+        "runtime": {
+            "name": "node",
+            "version": "20.11.x",
+            "onFail": "warn"
+        },
+        "packageManager": {
+            "name": "npm",
+            "version": ">=10.x",
+            "onFail": "error"
+        }
     },
     "devDependencies": {
         "concurrently": "^7.0.0"
