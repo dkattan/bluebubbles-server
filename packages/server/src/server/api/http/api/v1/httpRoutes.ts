@@ -246,6 +246,12 @@ export class HttpRoutes {
                     },
                     {
                         method: HttpMethod.GET,
+                        path: ":guid/download/status",
+                        validators: [AttachmentValidator.validateFind],
+                        controller: AttachmentRouter.downloadStatus
+                    },
+                    {
+                        method: HttpMethod.GET,
                         path: ":guid/download/force",
                         middleware: [...HttpRoutes.protected, PrivateApiMiddleware],
                         validators: [AttachmentValidator.validateDownload],

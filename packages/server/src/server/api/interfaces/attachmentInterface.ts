@@ -3,6 +3,7 @@ import fs from "fs";
 import { getBlurHash, isEmpty, isNotEmpty, resultAwaiter } from "@server/helpers/utils";
 import { FileSystem } from "@server/fileSystem";
 import { Attachment } from "@server/databases/imessage/entity/Attachment";
+import { AttachmentDownloadManager, AttachmentDownloadProgress } from "@server/managers/attachmentDownloadManager";
 import { Server } from "@server";
 
 function describeAttachment(attachment?: Attachment | null): string {
@@ -84,24 +85,83 @@ export class AttachmentInterface {
         return realPath;
     }
 
-    static async forceDownload(attachment: Attachment): Promise<Attachment> {
+    static async getDownloadProgress(
+        guid: string,
+        attachment?: Attachment | null
+    ): Promise<AttachmentDownloadProgress> {
+        return AttachmentDownloadManager.get(guid, attachment);
+    }
+
+    static async startForceDownload(attachment: Attachment): Promise<AttachmentDownloadProgress> {
         const attachmentGuid = attachment.guid;
+        const currentPath = attachment.filePath ? FileSystem.getRealPath(attachment.filePath) : "";
+        if (attachment.transferState === 5 && isNotEmpty(currentPath) && fs.existsSync(currentPath)) {
+            return AttachmentDownloadManager.markCompletedFromAttachment(attachment);
+        }
+
+        const existingProgress = await AttachmentDownloadManager.get(attachmentGuid, attachment);
+        if (["requested", "downloading"].includes(existingProgress.state)) {
+            Server().log(
+                `Attachment force-download already in progress (guid=${attachmentGuid}; state=${existingProgress.state}; requestId=${
+                    existingProgress.requestId ?? "null"
+                })`,
+                "debug"
+            );
+            return existingProgress;
+        }
+
         Server().log(`Starting attachment force-download (${describeAttachment(attachment)})`, "debug");
 
-        const result = await Server().privateApi.attachment.downloadPurged(attachmentGuid);
+        try {
+            const result = await Server().privateApi.attachment.downloadPurged(attachmentGuid);
+            const progress = AttachmentDownloadManager.upsert({
+                guid: attachmentGuid,
+                ...AttachmentDownloadManager.fromAttachment(attachment),
+                state: "requested",
+                stage: "requested",
+                requestId: result.data?.requestId ?? existingProgress.requestId ?? null,
+                helperMode: result.data?.mode ?? existingProgress.helperMode ?? null
+            });
+
+            Server().log(
+                `Private API force-download request finished (guid=${attachmentGuid}; identifier=${
+                    result.identifier
+                }; data=${formatTransactionData(result.data)}; progress=${formatTransactionData(progress)})`,
+                "debug"
+            );
+
+            return progress;
+        } catch (ex) {
+            const error = ex instanceof Error ? ex.message : String(ex);
+            if (error.includes("No need to unpurge")) {
+                return AttachmentDownloadManager.get(attachmentGuid, await Server().iMessageRepo.getAttachment(attachmentGuid));
+            }
+
+            AttachmentDownloadManager.markFailed(attachmentGuid, error, {
+                ...AttachmentDownloadManager.fromAttachment(attachment)
+            });
+            throw ex;
+        }
+    }
+
+    static async forceDownload(attachment: Attachment): Promise<Attachment> {
+        const attachmentGuid = attachment.guid;
+        const progress = await AttachmentInterface.startForceDownload(attachment);
         Server().log(
-            `Private API force-download request finished (guid=${attachmentGuid}; identifier=${
-                result.identifier
-            }; data=${formatTransactionData(result.data)})`,
+            `Awaiting attachment force-download completion (guid=${attachmentGuid}; state=${progress.state}; requestId=${
+                progress.requestId ?? "null"
+            })`,
             "debug"
         );
 
         attachment = await resultAwaiter({
             maxWaitMs: 1000 * 60 * 10,
-            initialWaitMs: 1000 * 5,
+            initialWaitMs: 1000,
             waitMultiplier: 1,
-            getData: (_: any) => {
-                return Server().iMessageRepo.getAttachment(attachmentGuid);
+            getData: async (_: any) => {
+                const latest = await Server().iMessageRepo.getAttachment(attachmentGuid);
+                await AttachmentDownloadManager.get(attachmentGuid, latest);
+                return latest;
             },
             dataLoopCondition: (data: Attachment) => {
                 return !data || data.transferState !== 5;
@@ -109,15 +169,20 @@ export class AttachmentInterface {
         });
 
         if (!attachment || attachment.transferState !== 5) {
+            const error = `Failed to download attachment! Transfer State: ${attachment?.transferState}`;
+            AttachmentDownloadManager.markFailed(attachmentGuid, error, {
+                ...AttachmentDownloadManager.fromAttachment(attachment)
+            });
             Server().log(
                 `Attachment force-download timed out or ended in a non-downloaded state (${describeAttachment(
                     attachment
                 )})`,
                 "warn"
             );
-            throw new Error(`Failed to download attachment! Transfer State: ${attachment?.transferState}`);
+            throw new Error(error);
         }
 
+        AttachmentDownloadManager.markCompletedFromAttachment(attachment);
         Server().log(`Attachment force-download completed (${describeAttachment(attachment)})`, "debug");
         return attachment;
     }

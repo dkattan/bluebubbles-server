@@ -178,6 +178,16 @@ export class AttachmentRouter {
         return new FileStream(ctx, aPath, mimeType).send();
     }
 
+    static async downloadStatus(ctx: RouterContext, _: Next) {
+        const { guid } = ctx.params;
+        const attachment = await Server().iMessageRepo.getAttachment(guid);
+        if (!attachment) {
+            throw new BadRequest({ message: `An attachment with the GUID, "${guid}" does not exist!` });
+        }
+
+        return new Success(ctx, { data: await AttachmentInterface.getDownloadProgress(guid, attachment) }).send();
+    }
+
     static async downloadLive(ctx: RouterContext, _: Next) {
         const { guid } = ctx.params;
 
@@ -255,11 +265,26 @@ export class AttachmentRouter {
 
     static async forceDownload(ctx: RouterContext, _: Next) {
         const { guid } = ctx.params;
-        Server().log(`Attachment force-download route requested (GUID: ${guid})`, "debug");
+        const waitForCompletion = isTruthyBool((ctx.request.query.wait as string) ?? "true");
+        Server().log(
+            `Attachment force-download route requested (GUID: ${guid}; waitForCompletion=${waitForCompletion})`,
+            "debug"
+        );
 
         let attachment = await Server().iMessageRepo.getAttachment(guid);
         if (!attachment) {
             throw new BadRequest({ message: `An attachment with the GUID, "${guid}" does not exist!` });
+        }
+
+        if (!waitForCompletion) {
+            const progress = await AttachmentInterface.startForceDownload(attachment);
+            Server().log(
+                `Attachment force-download route started background download (guid=${guid}; state=${progress.state}; requestId=${
+                    progress.requestId ?? "null"
+                })`,
+                "debug"
+            );
+            return new Success(ctx, { data: progress }).send();
         }
 
         // Wait a max of 10 minutes

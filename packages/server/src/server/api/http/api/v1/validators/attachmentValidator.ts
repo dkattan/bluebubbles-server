@@ -19,7 +19,8 @@ export class AttachmentValidator {
         width: "numeric|min:1",
         quality: "string|in:good,better,best",
         force: "boolean",
-        original: "boolean"
+        original: "boolean",
+        wait: "boolean"
     };
 
     static async validateDownload(ctx: RouterContext, next: Next) {
